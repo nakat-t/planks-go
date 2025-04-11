@@ -7,6 +7,7 @@
 - Configure loggers using environment variables
 - Automatically set up the default logger for `log/slog`
 - Support for different log levels, handler types, and output destinations
+- Context-aware logging functionality that automatically switches loggers based on context values
 
 ## Usage
 
@@ -83,6 +84,47 @@ LOGGER_LEVEL=info LOGGER_WRITER=file LOGGER_WRITER_FILE_PATH=./app.log go run ex
 
 ```
 PLANKS_ENV_PREFIX=APP APP_LOGGER_LEVEL=debug APP_LOGGER_HANDLER=json go run examples/auto_init/main.go
+```
+
+## Context-Aware Logging
+
+The library provides a context-aware logging functionality that automatically uses the logger stored in a `context.Context` object when logging with `slog.InfoContext` and similar functions, even when calling through the default logger.
+
+### Example
+
+```go
+import (
+    "context"
+    "log/slog"
+    
+    planks_slog "github.com/nakat-t/planks-go/slog"
+)
+
+func processRequest(ctx context.Context, requestID string) {
+    // Create a logger with specific attributes
+    logger := slog.Default().With(slog.String("RequestID", requestID))
+    
+    // Store the logger in the context
+    ctx = context.WithValue(ctx, planks_slog.ContextLoggerKey{}, logger)
+    
+    // Log with context - automatically uses the logger from context
+    // Output includes RequestID
+    slog.InfoContext(ctx, "Processing request with context")
+
+    // Log with other context - no RequestID
+    slog.InfoContext(context.Background(), "Processing request with other context")
+    
+    // Regular logging without context - no RequestID
+    slog.Info("Regular log without context")
+    
+    // Pass the context to other functions
+    doSomething(ctx)
+}
+
+func doSomething(ctx context.Context) {
+    // This will also include RequestID automatically
+    slog.InfoContext(ctx, "Doing something important")
+}
 ```
 
 ## License

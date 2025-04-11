@@ -1,8 +1,12 @@
 // Package slog extends Go's standard log/slog package to provide
 // environment-variable-based configuration for loggers.
+//
+// It also provides a context-aware logging functionality where logs can
+// automatically use a logger stored in the context instead of the default logger.
 package slog
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +50,72 @@ const (
 	EnvPlanksNoPanicOnError = "PLANKS_NO_PANIC_ON_ERROR"
 	EnvPlanksEnvPrefix      = "PLANKS_ENV_PREFIX"
 )
+
+// ContextLoggerKey is a key for context.Context values. It is used to store
+// a logger in context so that context-aware logs can use this logger instead
+// of the default logger.
+type ContextLoggerKey struct{}
+
+// contextAwareHandler is a wrapper handler that checks for a logger in the context
+// and delegates logging to that logger's handler if found. Otherwise, it delegates
+// to its internal handler.
+type contextAwareHandler struct {
+	internal slog.Handler
+}
+
+// Enabled implements slog.Handler.Enabled.
+func (h *contextAwareHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	if ctx != nil {
+		if loggerValue := ctx.Value(ContextLoggerKey{}); loggerValue != nil {
+			if logger, ok := loggerValue.(*slog.Logger); ok && logger != nil {
+				// Ensure handler is not itself to prevent recursive loops
+				contextHandler := logger.Handler()
+				if contextHandler != h {
+					return contextHandler.Enabled(ctx, level)
+				}
+			}
+		}
+	}
+	return h.internal.Enabled(ctx, level)
+}
+
+// Handle implements slog.Handler.Handle.
+func (h *contextAwareHandler) Handle(ctx context.Context, r slog.Record) error {
+	if ctx != nil {
+		if loggerValue := ctx.Value(ContextLoggerKey{}); loggerValue != nil {
+			if logger, ok := loggerValue.(*slog.Logger); ok && logger != nil {
+				// Ensure handler is not itself to prevent recursive loops
+				contextHandler := logger.Handler()
+				if contextHandler != h {
+					return contextHandler.Handle(ctx, r)
+				}
+			}
+		}
+	}
+	return h.internal.Handle(ctx, r)
+}
+
+// WithAttrs implements slog.Handler.WithAttrs.
+func (h *contextAwareHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &contextAwareHandler{
+		internal: h.internal.WithAttrs(attrs),
+	}
+}
+
+// WithGroup implements slog.Handler.WithGroup.
+func (h *contextAwareHandler) WithGroup(name string) slog.Handler {
+	return &contextAwareHandler{
+		internal: h.internal.WithGroup(name),
+	}
+}
+
+// newContextAwareHandler creates a new handler that wraps the given handler
+// with context-aware functionality.
+func newContextAwareHandler(handler slog.Handler) slog.Handler {
+	return &contextAwareHandler{
+		internal: handler,
+	}
+}
 
 // Config represents the logger configuration derived from environment variables.
 type Config struct {
@@ -194,14 +264,14 @@ func createHandler(config *Config, w io.Writer) slog.Handler {
 
 	switch config.HandlerType {
 	case "json":
-		return slog.NewJSONHandler(w, opts)
+		return newContextAwareHandler(slog.NewJSONHandler(w, opts))
 	case "text":
-		return slog.NewTextHandler(w, opts)
+		return newContextAwareHandler(slog.NewTextHandler(w, opts))
 	case "discard":
-		return slog.DiscardHandler
+		return slog.DiscardHandler // Discard handler does not log anything, so no need for context awareness
 	default:
 		// This should never happen due to validation in ReadConfig
-		return slog.NewTextHandler(w, opts)
+		return newContextAwareHandler(slog.NewTextHandler(w, opts))
 	}
 }
 
@@ -246,6 +316,7 @@ func Build() (*slog.Logger, error) {
 	}
 
 	handler := createHandler(config, writer)
+
 	return slog.New(handler), nil
 }
 

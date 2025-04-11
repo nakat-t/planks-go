@@ -1,7 +1,9 @@
 package slog
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
@@ -374,5 +376,160 @@ func restoreEnvVars(saved map[string]string) {
 		} else {
 			os.Setenv(k, v)
 		}
+	}
+}
+
+// testBufferHandler is a mock handler implementation used for testing.
+type testBufferHandler struct {
+	logs []string
+}
+
+func newTestBufferHandler() *testBufferHandler {
+	return &testBufferHandler{
+		logs: make([]string, 0),
+	}
+}
+
+func (h *testBufferHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return true
+}
+
+func (h *testBufferHandler) Handle(ctx context.Context, r slog.Record) error {
+	var attrs []string
+	r.Attrs(func(a slog.Attr) bool {
+		attrs = append(attrs, fmt.Sprintf("%s=%v", a.Key, a.Value.Any()))
+		return true
+	})
+
+	msg := fmt.Sprintf("%s: %s %v", r.Level, r.Message, attrs)
+	h.logs = append(h.logs, msg)
+	return nil
+}
+
+func (h *testBufferHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *testBufferHandler) WithGroup(name string) slog.Handler {
+	return h
+}
+
+func TestContextAwareHandler(t *testing.T) {
+	// Create an internal handler that we'll use as the base handler
+	internalHandler := newTestBufferHandler()
+
+	// Create a context logger that we'll store in the context
+	contextHandler := newTestBufferHandler()
+	contextLogger := slog.New(contextHandler)
+
+	// Create our context-aware handler that wraps the internal handler
+	contextAwareHandler := newContextAwareHandler(internalHandler)
+	defaultLogger := slog.New(contextAwareHandler)
+
+	// Create a context with the logger
+	ctx := context.Background()
+	ctxWithLogger := context.WithValue(ctx, ContextLoggerKey{}, contextLogger)
+
+	// Test cases
+	tests := []struct {
+		name             string
+		ctx              context.Context
+		logFunc          func()
+		expectedInternal int // Expected number of logs in the internal handler
+		expectedContext  int // Expected number of logs in the context handler
+	}{
+		{
+			name: "With nil context",
+			ctx:  nil,
+			logFunc: func() {
+				defaultLogger.Info("test message")
+			},
+			expectedInternal: 1,
+			expectedContext:  0,
+		},
+		{
+			name: "With empty context",
+			ctx:  context.Background(),
+			logFunc: func() {
+				defaultLogger.InfoContext(context.Background(), "test message")
+			},
+			expectedInternal: 1,
+			expectedContext:  0,
+		},
+		{
+			name: "With context logger",
+			ctx:  ctxWithLogger,
+			logFunc: func() {
+				defaultLogger.InfoContext(ctxWithLogger, "test message")
+			},
+			expectedInternal: 0,
+			expectedContext:  1,
+		},
+		{
+			name: "Mix of context and non-context logs",
+			ctx:  ctxWithLogger,
+			logFunc: func() {
+				defaultLogger.Info("non-context message")                        // Should use internal
+				defaultLogger.InfoContext(context.Background(), "empty context") // Should use internal
+				defaultLogger.InfoContext(ctxWithLogger, "with context logger")  // Should use context
+			},
+			expectedInternal: 2,
+			expectedContext:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset the log buffers
+			internalHandler.logs = make([]string, 0)
+			contextHandler.logs = make([]string, 0)
+
+			// Run the test
+			tt.logFunc()
+
+			// Check if logs went to the right handlers
+			if len(internalHandler.logs) != tt.expectedInternal {
+				t.Errorf("internal handler expected %d logs, got %d", tt.expectedInternal, len(internalHandler.logs))
+			}
+
+			if len(contextHandler.logs) != tt.expectedContext {
+				t.Errorf("context handler expected %d logs, got %d", tt.expectedContext, len(contextHandler.logs))
+			}
+		})
+	}
+}
+
+// TestContextLoggerWithStandardLogger tests the integration with the standard slog package.
+// This shows how a user might use the context switching functionality in real code.
+func TestContextLoggerWithStandardLogger(t *testing.T) {
+	// Save the original default logger and restore it after the test
+	originalDefault := slog.Default()
+	defer slog.SetDefault(originalDefault)
+
+	// Create our test handlers
+	defaultHandler := newTestBufferHandler()
+	contextHandler := newTestBufferHandler()
+
+	// Set up the default logger with our context-aware handler
+	defaultLogger := slog.New(newContextAwareHandler(defaultHandler))
+	slog.SetDefault(defaultLogger)
+
+	// Create a context-specific logger and add it to a context
+	contextLogger := slog.New(contextHandler)
+	ctx := context.Background()
+	ctxWithLogger := context.WithValue(ctx, ContextLoggerKey{}, contextLogger)
+
+	// Now test that slog package functions respect our context logger
+	slog.Info("regular log")                       // Should go to defaultHandler
+	slog.InfoContext(ctx, "empty context log")     // Should go to defaultHandler
+	slog.InfoContext(ctxWithLogger, "context log") // Should go to contextHandler
+
+	// Verify the logs went to the right places
+	if len(defaultHandler.logs) != 2 {
+		t.Errorf("default handler expected 2 logs, got %d", len(defaultHandler.logs))
+	}
+
+	if len(contextHandler.logs) != 1 {
+		t.Errorf("context handler expected 1 log, got %d", len(contextHandler.logs))
 	}
 }
