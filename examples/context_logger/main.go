@@ -27,7 +27,12 @@ func processRequest(ctx context.Context, reqID string) {
 	slog.Info("Starting to process request")
 
 	// Create a logger with request ID
-	logger := slog.Default().With(slog.String("RequestID", reqID))
+
+	// If a logger has already been set for context, use that, otherwise get slog.Default()
+	logger := planks_slog.FromContext(ctx)
+
+	// Add RequestID attribute to the logger
+	logger = logger.With(slog.String("RequestID", reqID))
 
 	// Add the logger to the context
 	ctx = context.WithValue(ctx, planks_slog.ContextLoggerKey{}, logger)

@@ -117,6 +117,15 @@ func newContextAwareHandler(handler slog.Handler) slog.Handler {
 	}
 }
 
+func FromContext(ctx context.Context) *slog.Logger {
+	if loggerValue := ctx.Value(ContextLoggerKey{}); loggerValue != nil {
+		if logger, ok := loggerValue.(*slog.Logger); ok && logger != nil {
+			return logger
+		}
+	}
+	return slog.Default()
+}
+
 // Config represents the logger configuration derived from environment variables.
 type Config struct {
 	// Level is the minimum level to log.

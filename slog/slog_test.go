@@ -533,3 +533,22 @@ func TestContextLoggerWithStandardLogger(t *testing.T) {
 		t.Errorf("context handler expected 1 log, got %d", len(contextHandler.logs))
 	}
 }
+
+func TestFromContext(t *testing.T) {
+	// Create a context with a logger
+	ctx := context.Background()
+	logger := slog.New(newTestBufferHandler())
+	ctxWithLogger := context.WithValue(ctx, ContextLoggerKey{}, logger)
+
+	// Test FromContext function
+	retrievedLogger := FromContext(ctxWithLogger)
+	if retrievedLogger != logger {
+		t.Errorf("expected retrieved logger to be the same as the one in context")
+	}
+
+	// Test with empty context
+	retrievedLogger = FromContext(context.Background())
+	if retrievedLogger != slog.Default() {
+		t.Errorf("expected retrieved logger to be the default logger")
+	}
+}
